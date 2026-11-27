@@ -9,6 +9,7 @@ import { gerarXlsxPedidos, expandir, CargaPedidos } from "../pedidos-mes/src/xls
 import { gerarXlsxPainelVendas, expandir as expandirPV, CargaPV } from "../painel-vendas-aprovacao/src/xlsxPainelVendas";
 import { gerarXlsxMetasRep, expandir as expandirMR, CargaRep } from "../painel-metas-rep/src/xlsxMetasRep";
 import { ANTON_B64 } from "./fonte";
+import { decodificarPedidosTabela, gerarXlsxTabela, mensagemPedidos } from "./pedidosTabela";
 import { inflarXlsxComLimite, validarXlsxBytes, MAX_COMPRESSED_XLSX_BYTES } from "./xlsxBytes";
 
 interface CargaDia extends Omit<EntradaDia, "imagens"> { tipo: "painelDia"; svgs: { svg: string; w: number; h: number }[]; }
@@ -88,11 +89,13 @@ function esperarCola(nome: string, mime: string, linhas: string, unidade: string
     const usar = async (texto: string): Promise<void> => {
         if (feito) { return; }
         const t = (texto || "").trim();
-        const pref = t.indexOf("NFXLSX1.") === 0 ? "NFXLSX1." : Object.keys(PREFIXOS_COLA).find(k => t.indexOf(k) === 0);
+        const pref = t.indexOf("NFPT1.") === 0 ? "NFPT1." : t.indexOf("NFXLSX1.") === 0 ? "NFXLSX1." : Object.keys(PREFIXOS_COLA).find(k => t.indexOf(k) === 0);
         if (!pref) { erro("O texto colado não veio do painel. Volte ao Power BI, clique em Exportar > Baixar Excel de novo e cole aqui sem copiar outra coisa antes."); bt.classList.remove("oculto"); return; }
         feito = true; bt.classList.add("oculto");
         try {
-            if (pref === "NFXLSX1.") {
+            if (pref === "NFPT1.") {
+                entregar(await gerarXlsxTabela(await decodificarPedidosTabela(t.slice(pref.length))), nome, mime);
+            } else if (pref === "NFXLSX1.") {
                 // Bound encoded input before atob allocates the compressed byte array.
                 if (t.length - pref.length > Math.ceil(MAX_COMPRESSED_XLSX_BYTES / 3) * 4) {
                     throw new Error("O arquivo recebido ultrapassa 30 MB.");
@@ -104,7 +107,8 @@ function esperarCola(nome: string, mime: string, linhas: string, unidade: string
             }
         } catch (e) {
             feito = false;
-            erro("Os dados colados estão incompletos. " + (e instanceof Error ? e.message : ""));
+            if (pref === "NFPT1.") { erro(mensagemPedidos(e)); }
+            else erro("Os dados colados estão incompletos. " + (e instanceof Error ? e.message : ""));
             bt.classList.remove("oculto");
         }
     };
@@ -122,7 +126,10 @@ function esperarCola(nome: string, mime: string, linhas: string, unidade: string
     const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     try {
         const j = p.get("j"), d = p.get("d");
-        if (j) {
+        if (j && p.get("v") === "2") {
+            try { entregar(await gerarXlsxTabela(await decodificarPedidosTabela(j, p.get("c") === "1")), nome, mime); }
+            catch (e) { esperarCola(nome, mime, "", ""); erro(mensagemPedidos(e)); }
+        } else if (j) {
             const bruto = p.get("c") === "1" ? await inflar(b64u(j)) : b64u(j);
             const carga = JSON.parse(new TextDecoder().decode(bruto)) as Carga | CargaDia | CargaMes | CargaPedido | CargaReps | CargaMetas | CargaPM | CargaVendas | CargaMR;
             const png = async (g: { svg: string; w: number; h: number }) => ({ png: await svgParaPng(g.svg, g.w, g.h), w: g.w, h: g.h });
